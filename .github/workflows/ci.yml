@@ -23,6 +23,11 @@ jobs:
 
   frontend:
     runs-on: ubuntu-latest
+    env:
+      NEXT_PUBLIC_SUPABASE_URL: https://example.supabase.co
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: dummy-anon-key
+      NEXT_PUBLIC_API_URL: http://localhost:5000/api/v1
+      NEXT_PUBLIC_SOCKET_URL: http://localhost:5000
     defaults:
       run:
         working-directory: frontend
@@ -45,5 +50,4 @@ jobs:
         with:
           python-version: "3.11"
       - run: python -m pip install --upgrade pip
-      - run: python -m pip install -r ai-service/requirements.txt
       - run: python -m py_compile ai-service/app/main.py
