@@ -4,6 +4,8 @@ const { ApiError } = require('../utils/apiError');
 
 const AVATAR_BUCKET = process.env.SUPABASE_AVATAR_BUCKET || 'avatars';
 const RESOURCE_BUCKET = process.env.SUPABASE_RESOURCE_BUCKET || 'resource-files';
+const PUBLIC_BUCKETS = new Set([AVATAR_BUCKET, RESOURCE_BUCKET]);
+const bucketStateCache = new Map();
 
 const EXT_BY_MIME = {
   'image/jpeg': 'jpg',
@@ -21,7 +23,43 @@ const getExtension = (file) => {
   return split.length > 1 ? split.pop().toLowerCase() : 'bin';
 };
 
+const isBucketMissingError = (error) => {
+  const msg = String(error?.message || '').toLowerCase();
+  return msg.includes('bucket not found') || msg.includes('not found') || msg.includes('does not exist');
+};
+
+const ensureBucketExists = async (bucket) => {
+  const cached = bucketStateCache.get(bucket);
+  if (cached) return cached;
+
+  const expectedPublic = PUBLIC_BUCKETS.has(bucket);
+
+  const { data: bucketData, error: getError } = await supabase.storage.getBucket(bucket);
+  if (getError && !isBucketMissingError(getError)) {
+    throw new ApiError(400, getError.message);
+  }
+
+  if (getError && isBucketMissingError(getError)) {
+    const { error: createError } = await supabase.storage.createBucket(bucket, {
+      public: expectedPublic,
+      fileSizeLimit: '10MB',
+    });
+
+    if (createError && !String(createError.message || '').toLowerCase().includes('already exists')) {
+      throw new ApiError(400, createError.message);
+    }
+  }
+
+  const state = {
+    isPublic: bucketData?.public ?? expectedPublic,
+  };
+  bucketStateCache.set(bucket, state);
+  return state;
+};
+
 const uploadAndResolveUrl = async (bucket, filePath, file) => {
+  const bucketState = await ensureBucketExists(bucket);
+
   const { error: uploadError } = await supabase.storage
     .from(bucket)
     .upload(filePath, file.buffer, {
@@ -33,10 +71,12 @@ const uploadAndResolveUrl = async (bucket, filePath, file) => {
     throw new ApiError(400, uploadError.message);
   }
 
-  const { data: publicData } = supabase.storage.from(bucket).getPublicUrl(filePath);
-  const publicUrl = publicData?.publicUrl || null;
-
-  if (publicUrl) {
+  if (bucketState.isPublic) {
+    const { data: publicData } = supabase.storage.from(bucket).getPublicUrl(filePath);
+    const publicUrl = publicData?.publicUrl || null;
+    if (!publicUrl) {
+      throw new ApiError(400, 'Failed to generate uploaded file URL.');
+    }
     return { filePath, url: publicUrl };
   }
 
