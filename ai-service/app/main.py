@@ -1,31 +1,28 @@
 import re
+import os
 from typing import List, Optional
 
 import numpy as np
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
-from sentence_transformers import SentenceTransformer
 
-try:
-    from haystack import Document
-    from haystack.document_stores.in_memory import InMemoryDocumentStore
-    from haystack.components.embedders import (
-        SentenceTransformersDocumentEmbedder,
-        SentenceTransformersTextEmbedder,
-    )
-    from haystack.components.retrievers.in_memory import InMemoryEmbeddingRetriever
-
-    HAYSTACK_AVAILABLE = True
-    HAYSTACK_IMPORT_ERROR = ""
-except Exception as exc:  # pragma: no cover - optional dependency guard
-    HAYSTACK_AVAILABLE = False
-    HAYSTACK_IMPORT_ERROR = str(exc)
-
-
-MODEL_NAME = "all-MiniLM-L6-v2"
+MODEL_NAME = os.getenv("EMBED_MODEL_NAME", "all-MiniLM-L6-v2")
+AI_EMBED_MODE = os.getenv("AI_EMBED_MODE", "lite").strip().lower()  # lite | semantic
+ENABLE_HAYSTACK = os.getenv("ENABLE_HAYSTACK", "false").strip().lower() == "true"
 
 app = FastAPI(title="Peer Connect Semantic AI Service", version="1.0.0")
-model = SentenceTransformer(MODEL_NAME)
+
+model = None
+MODEL_LOAD_ERROR = ""
+
+HAYSTACK_AVAILABLE = False
+HAYSTACK_IMPORT_ERROR = ""
+_haystack_bootstrapped = False
+Document = None
+InMemoryDocumentStore = None
+SentenceTransformersDocumentEmbedder = None
+SentenceTransformersTextEmbedder = None
+InMemoryEmbeddingRetriever = None
 _doc_embedder = None
 _text_embedder = None
 
@@ -114,12 +111,106 @@ def _cosine_scores(query_vector: np.ndarray, matrix: np.ndarray) -> np.ndarray:
     return (matrix @ query_vector) / denominator
 
 
+def _tokenize(value: str) -> List[str]:
+    return re.findall(r"[a-z0-9_]+", (value or "").lower())
+
+
+def _lexical_rank(query_text: str, items: List[SemanticDocument]) -> List[RankedItem]:
+    if not items:
+        return []
+
+    query_tokens = set(_tokenize(query_text))
+    if not query_tokens:
+        return [RankedItem(id=item.id, score=0.0) for item in items]
+
+    ranked = []
+    for item in items:
+        doc_tokens = set(_tokenize(item.text))
+        if not doc_tokens:
+            score = 0.0
+        else:
+            overlap = len(query_tokens.intersection(doc_tokens))
+            coverage = overlap / max(1, len(query_tokens))
+            density = overlap / max(1, len(doc_tokens))
+            score = float((coverage * 0.8) + (density * 0.2))
+
+        ranked.append(RankedItem(id=item.id, score=score))
+
+    ranked.sort(key=lambda row: row.score, reverse=True)
+    return ranked
+
+
+def _get_model():
+    global model, MODEL_LOAD_ERROR
+
+    if AI_EMBED_MODE != "semantic":
+        return None
+
+    if model is not None:
+        return model
+
+    if MODEL_LOAD_ERROR:
+        return None
+
+    try:
+        from sentence_transformers import SentenceTransformer
+
+        model = SentenceTransformer(MODEL_NAME)
+        return model
+    except Exception as exc:  # pragma: no cover - memory/runtime guard
+        MODEL_LOAD_ERROR = str(exc)
+        return None
+
+
+def _bootstrap_haystack():
+    global _haystack_bootstrapped
+    global HAYSTACK_AVAILABLE, HAYSTACK_IMPORT_ERROR
+    global Document, InMemoryDocumentStore
+    global SentenceTransformersDocumentEmbedder, SentenceTransformersTextEmbedder, InMemoryEmbeddingRetriever
+
+    if _haystack_bootstrapped:
+        return HAYSTACK_AVAILABLE
+
+    _haystack_bootstrapped = True
+
+    if not ENABLE_HAYSTACK:
+        HAYSTACK_AVAILABLE = False
+        HAYSTACK_IMPORT_ERROR = "disabled (set ENABLE_HAYSTACK=true)"
+        return False
+
+    try:
+        from haystack import Document as _Document
+        from haystack.document_stores.in_memory import InMemoryDocumentStore as _InMemoryDocumentStore
+        from haystack.components.embedders import (
+            SentenceTransformersDocumentEmbedder as _SentenceTransformersDocumentEmbedder,
+            SentenceTransformersTextEmbedder as _SentenceTransformersTextEmbedder,
+        )
+        from haystack.components.retrievers.in_memory import InMemoryEmbeddingRetriever as _InMemoryEmbeddingRetriever
+
+        Document = _Document
+        InMemoryDocumentStore = _InMemoryDocumentStore
+        SentenceTransformersDocumentEmbedder = _SentenceTransformersDocumentEmbedder
+        SentenceTransformersTextEmbedder = _SentenceTransformersTextEmbedder
+        InMemoryEmbeddingRetriever = _InMemoryEmbeddingRetriever
+        HAYSTACK_AVAILABLE = True
+        HAYSTACK_IMPORT_ERROR = ""
+        return True
+    except Exception as exc:  # pragma: no cover - optional dependency guard
+        HAYSTACK_AVAILABLE = False
+        HAYSTACK_IMPORT_ERROR = str(exc)
+        return False
+
+
 def _rank(query_text: str, items: List[SemanticDocument]) -> List[RankedItem]:
     if not items:
         return []
 
-    query_embedding = model.encode(query_text, normalize_embeddings=False)
-    doc_embeddings = model.encode([item.text for item in items], normalize_embeddings=False)
+    active_model = _get_model()
+    if active_model is None:
+        return _lexical_rank(query_text, items)
+
+    query_embedding = active_model.encode(query_text, normalize_embeddings=False)
+    doc_embeddings = active_model.encode([item.text for item in items], normalize_embeddings=False)
 
     query_vec = np.array(query_embedding)
     doc_matrix = np.array(doc_embeddings)
@@ -192,6 +283,9 @@ def _build_quiz_questions(content: str, num_questions: int) -> List[QuizQuestion
 
 def _get_haystack_embedders():
     global _doc_embedder, _text_embedder
+    if not _bootstrap_haystack():
+        return None, None
+
     if _doc_embedder is None:
         _doc_embedder = SentenceTransformersDocumentEmbedder(model=MODEL_NAME)
         _doc_embedder.warm_up()
@@ -202,10 +296,10 @@ def _get_haystack_embedders():
 
 
 def _rank_with_haystack(query_text: str, docs: List[RagDocument], top_k: int) -> List[RagContext]:
-    if not HAYSTACK_AVAILABLE:
+    doc_embedder, text_embedder = _get_haystack_embedders()
+    if not doc_embedder or not text_embedder:
         return []
 
-    doc_embedder, text_embedder = _get_haystack_embedders()
     document_store = InMemoryDocumentStore(embedding_similarity_function="cosine")
 
     hay_docs = [
@@ -264,9 +358,13 @@ def _rank_with_fallback(query_text: str, docs: List[RagDocument], top_k: int) ->
 
 @app.get("/health")
 def health():
+    _bootstrap_haystack()
     return {
         "status": "ok",
         "model": MODEL_NAME,
+        "embed_mode": AI_EMBED_MODE,
+        "model_loaded": model is not None,
+        "model_error": MODEL_LOAD_ERROR or None,
         "haystack_available": HAYSTACK_AVAILABLE,
         "haystack_error": HAYSTACK_IMPORT_ERROR or None,
     }

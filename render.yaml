@@ -54,3 +54,7 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.9
+      - key: AI_EMBED_MODE
+        value: lite
+      - key: ENABLE_HAYSTACK
+        value: false
