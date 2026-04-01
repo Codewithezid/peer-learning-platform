@@ -20,13 +20,18 @@ export function extractYouTubeId(url: string): string | null {
   return match ? match[1] : null;
 }
 
-export function getInitials(name: string): string {
-  return name
-    .split(' ')
-    .map((n) => n[0])
+export function getInitials(name?: string | null): string {
+  if (!name || typeof name !== 'string') return 'U';
+  const parts = name
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (parts.length === 0) return 'U';
+  return parts
+    .map((n) => n[0] || '')
     .join('')
     .toUpperCase()
-    .slice(0, 2);
+    .slice(0, 2) || 'U';
 }
 
 export function getLevelTitle(level: number): string {

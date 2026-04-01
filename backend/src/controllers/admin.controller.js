@@ -1,5 +1,6 @@
 const { supabase } = require('../config/supabase');
 const { ApiError } = require('../utils/apiError');
+const { randomUUID } = require('crypto');
 
 const countRows = async (tableName) => {
   const { count, error } = await supabase.from(tableName).select('id', { count: 'exact', head: true });
@@ -279,6 +280,157 @@ const getReports = async (req, res) => {
   }
 };
 
+const DEMO_PASSWORD = 'PeerConnect@123';
+
+const DEMO_USERS = [
+  {
+    full_name: 'Aisha Verma',
+    headline: 'Backend & System Design Mentor',
+    location: 'Bengaluru',
+    bio: 'Backend engineer helping peers with APIs, architecture, and scaling.',
+    xp_points: 920,
+    level: 7,
+    skills: ['System Design', 'Node.js', 'TypeScript', 'SQL'],
+  },
+  {
+    full_name: 'Rahul Nair',
+    headline: 'ML Engineer (NLP/LLMs)',
+    location: 'Hyderabad',
+    bio: 'AIML engineer focused on NLP, LLM workflows, and evaluation.',
+    xp_points: 840,
+    level: 6,
+    skills: ['Machine Learning', 'Python', 'Data Analysis', 'Statistics'],
+  },
+  {
+    full_name: 'Neha Singh',
+    headline: 'Computer Vision + MLOps',
+    location: 'Pune',
+    bio: 'Computer vision practitioner with model deployment and MLOps experience.',
+    xp_points: 790,
+    level: 6,
+    skills: ['Machine Learning', 'Docker', 'AWS', 'Data Visualization'],
+  },
+  {
+    full_name: 'Arjun Patel',
+    headline: 'Cloud Backend Engineer',
+    location: 'Mumbai',
+    bio: 'Builds cloud-native backend services and CI/CD pipelines.',
+    xp_points: 710,
+    level: 5,
+    skills: ['Node.js', 'Go', 'Docker', 'CI/CD'],
+  },
+  {
+    full_name: 'Priya Sharma',
+    headline: 'Data Scientist + Mentor',
+    location: 'Delhi',
+    bio: 'Helps peers with analytics, ML fundamentals, and practical projects.',
+    xp_points: 760,
+    level: 6,
+    skills: ['Python', 'Machine Learning', 'Data Analysis', 'Statistics'],
+  },
+];
+
+const createDemoUsers = async (req, res) => {
+  try {
+    const requestedCount = Number(req.body?.count || 3);
+    const count = Math.max(1, Math.min(10, Number.isFinite(requestedCount) ? requestedCount : 3));
+
+    const selectedUsers = DEMO_USERS.slice(0, count);
+    const allSkillNames = Array.from(new Set(selectedUsers.flatMap((user) => user.skills)));
+
+    const { data: skillRows, error: skillError } = await supabase
+      .from('skills')
+      .select('id, name')
+      .in('name', allSkillNames);
+
+    if (skillError) throw new ApiError(400, skillError.message);
+
+    const skillIdByName = new Map((skillRows || []).map((row) => [row.name, row.id]));
+    const createdUsers = [];
+
+    for (const [index, demoUser] of selectedUsers.entries()) {
+      const uniqueSuffix = `${Date.now()}-${randomUUID().slice(0, 8)}-${index + 1}`;
+      const emailBase = demoUser.full_name.toLowerCase().replace(/[^a-z0-9]+/g, '.');
+      const email = `${emailBase}.${uniqueSuffix}@demo.peerconnect.local`;
+
+      const { data: authData, error: authError } = await supabase.auth.admin.createUser({
+        email,
+        password: DEMO_PASSWORD,
+        email_confirm: true,
+        user_metadata: {
+          full_name: demoUser.full_name,
+          is_demo_user: true,
+        },
+      });
+
+      if (authError || !authData?.user?.id) {
+        throw new ApiError(400, authError?.message || 'Failed to create demo user');
+      }
+
+      const userId = authData.user.id;
+
+      const { error: profileError } = await supabase
+        .from('profiles')
+        .upsert(
+          {
+            id: userId,
+            full_name: demoUser.full_name,
+            headline: demoUser.headline,
+            location: demoUser.location,
+            bio: demoUser.bio,
+            xp_points: demoUser.xp_points,
+            level: demoUser.level,
+          },
+          { onConflict: 'id' }
+        );
+
+      if (profileError) throw new ApiError(400, profileError.message);
+
+      const skillPayload = demoUser.skills
+        .map((skillName, i) => {
+          const skillId = skillIdByName.get(skillName);
+          if (!skillId) return null;
+          return {
+            user_id: userId,
+            skill_id: skillId,
+            proficiency_level: Math.max(2, Math.min(5, 5 - i)),
+            is_teaching: i % 2 === 0,
+            is_learning: i % 2 !== 0,
+          };
+        })
+        .filter(Boolean);
+
+      if (skillPayload.length > 0) {
+        const { error: userSkillsError } = await supabase
+          .from('user_skills')
+          .upsert(skillPayload, { onConflict: 'user_id,skill_id' });
+
+        if (userSkillsError) throw new ApiError(400, userSkillsError.message);
+      }
+
+      createdUsers.push({
+        id: userId,
+        email,
+        full_name: demoUser.full_name,
+      });
+    }
+
+    res.status(201).json({
+      success: true,
+      data: {
+        created_count: createdUsers.length,
+        users: createdUsers,
+        default_password: DEMO_PASSWORD,
+      },
+    });
+  } catch (error) {
+    if (error instanceof ApiError) {
+      return res.status(error.statusCode).json({ success: false, message: error.message });
+    }
+    res.status(500).json({ success: false, message: 'Internal server error' });
+  }
+};
+
 module.exports = {
   checkAccess,
   getDashboard,
@@ -287,4 +439,5 @@ module.exports = {
   getSessions,
   getAIUsage,
   getReports,
+  createDemoUsers,
 };

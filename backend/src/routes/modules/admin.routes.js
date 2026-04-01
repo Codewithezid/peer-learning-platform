@@ -8,6 +8,7 @@ const router = express.Router();
 router.get('/admin/access', auth, requireAdmin, adminController.checkAccess);
 router.get('/admin/dashboard', auth, requireAdmin, adminController.getDashboard);
 router.get('/admin/users', auth, requireAdmin, adminController.getUsers);
+router.post('/admin/users/seed-demo', auth, requireAdmin, adminController.createDemoUsers);
 router.get('/admin/resources', auth, requireAdmin, adminController.getResources);
 router.get('/admin/sessions', auth, requireAdmin, adminController.getSessions);
 router.get('/admin/ai-usage', auth, requireAdmin, adminController.getAIUsage);

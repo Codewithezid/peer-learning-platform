@@ -5,6 +5,7 @@ import { Session, User } from '@supabase/supabase-js';
 import { supabase } from '@/lib/supabase';
 import { Profile } from '@/types';
 import api from '@/lib/api';
+import { unwrapData } from '@/lib/apiResponse';
 import {
   buildGuestProfile,
   buildGuestUser,
@@ -44,8 +45,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const fetchProfile = async () => {
     try {
-      const { data } = await api.get('/auth/me');
-      setProfile(data.profile || data);
+      const response = await api.get('/auth/me');
+      const profilePayload = unwrapData<Profile & { user_skills?: unknown[] }>(response);
+      setProfile(profilePayload ?? null);
     } catch {
       setProfile(null);
     }

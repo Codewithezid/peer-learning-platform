@@ -8,13 +8,10 @@ const requireAdmin = (req, res, next) => {
   const adminUserIds = parseAdminUserIds();
 
   if (adminUserIds.length === 0) {
-    if (process.env.NODE_ENV === 'production') {
-      return res.status(500).json({
-        success: false,
-        message: 'Admin access is not configured. Set ADMIN_USER_IDS in backend environment variables.',
-      });
-    }
-    return next();
+    return res.status(500).json({
+      success: false,
+      message: 'Admin access is not configured. Set ADMIN_USER_IDS in backend environment variables.',
+    });
   }
 
   if (!req.user?.id || !adminUserIds.includes(req.user.id)) {

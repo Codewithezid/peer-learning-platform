@@ -8,7 +8,7 @@ type AvatarSize = 'sm' | 'md' | 'lg' | 'xl';
 
 interface AvatarProps {
   src?: string | null;
-  name: string;
+  name?: string | null;
   size?: AvatarSize;
   online?: boolean;
   className?: string;
@@ -36,6 +36,7 @@ export default function Avatar({
   className,
 }: AvatarProps) {
   const [imgError, setImgError] = React.useState(false);
+  const safeName = typeof name === 'string' && name.trim().length > 0 ? name : 'User';
 
   const showFallback = !src || imgError;
 
@@ -48,12 +49,12 @@ export default function Avatar({
             sizeStyles[size]
           )}
         >
-          {getInitials(name)}
+          {getInitials(safeName)}
         </div>
       ) : (
         <img
           src={src}
-          alt={name}
+          alt={safeName}
           onError={() => setImgError(true)}
           className={clsx(
             'rounded-full object-cover',
