@@ -103,3 +103,7 @@ python -m py_compile ai-service/app/main.py
 - AI Service: Render (separate service)
 - Database/Auth/Storage: Supabase
 
+Deployment guide:
+
+- `docs/DEPLOY_RENDER_VERCEL.md`
+
